@@ -1,0 +1,9 @@
+minion:
+  name: pitr.swooplinux.org
+master:
+  host:
+    - 127.0.0.1:2379
+  keepaliveping: 10
+log:
+  filename: galt-client.log
+  loglevel: debug

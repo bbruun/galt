@@ -14,6 +14,7 @@ const (
 )
 
 type Grains struct {
+	Hostname        string
 	NumberOfCPUs    int
 	NumberOfCores   int
 	Archetecture    string
@@ -38,6 +39,7 @@ func (g Grains) ToJSON() string {
 }
 
 func (g *Grains) Update() {
+	g.Hostname, _ = os.Hostname()
 	g.findKernelVersion()
 	g.NumberOfCores = runtime.NumCPU()
 	g.Archetecture = runtime.GOARCH
@@ -46,7 +48,7 @@ func (g *Grains) Update() {
 	// g.Kernel.KernelVersion, _ = kernel.GetKernelVersion()
 	// g.Kernel.KernelVersonFull = fmt.Sprintf("%s",
 	// 	strings.TrimRight(g.OperatingSystem, "\n"))
-	g.Sysinfo.GetSysInfo()
+	// g.Sysinfo.GetSysInfo()
 }
 
 func (g *Grains) findKernelVersion() {

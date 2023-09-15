@@ -1,2 +1,4 @@
 server/etcd-storage/*
 server/misc/*
+server/galt-etcd
+client/galt-etcd-client

@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"galt-etcd/utils"
 	"log"
 	"net/url"
 	"os"
@@ -35,6 +36,7 @@ var SystemName string = "Galt"
 var Storage string = "./etcd-storage"
 var BindAddress string = "0.0.0.0"
 var EtcdLogLevel string = "error"
+var SEND_RANDOM_STUFF bool = false
 
 func debug(msg ...string) {
 	if DEBUG {
@@ -58,6 +60,9 @@ func init() {
 	flag.StringVar(&BindAddress, "b", BindAddress, "Set the IP to bind the etcd service to - aka the IP clients will connect to on this server")
 	// Change embedded etcd loglevel
 	flag.StringVar(&EtcdLogLevel, "etcd-loglevel", EtcdLogLevel, "The loglevel for etcd (debug, info, warn, error, panic, or fatal)")
+
+	// Test all minions
+	flag.BoolVar(&SEND_RANDOM_STUFF, "test-all-minions", false, "Send random state.sls and cmd.run (non harmful) to all minions")
 	flag.Parse()
 
 	debug("Debug is enabled:", strconv.FormatBool(DEBUG))
@@ -107,6 +112,10 @@ func main() {
 	select {
 	case <-etcd.Server.ReadyNotify():
 		log.Printf("Etcd server is ready!")
+	}
+	if SEND_RANDOM_STUFF == true {
+		fmt.Println("test-all-minions have been passed... please wait...")
+		utils.TestMinions()
 	}
 
 	err = <-etcd.Err()

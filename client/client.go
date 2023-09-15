@@ -1,119 +1,147 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"galt-etcd-client/grains"
-	"log"
-	"os"
-	"regexp"
+	"galt-etcd-client/utils"
 	"strings"
 	"time"
 
-	"github.com/cameronnewman/go-flatten"
-	"github.com/tidwall/gjson"
 	"go.etcd.io/etcd/clientv3"
 )
 
-var minionGrains *grains.Grains
+var DEBUG bool = false
+var MINION_BASE string = "/minion"
 
 func init() {
-	minionGrains = grains.NewGrains()
+	utils.MinionGrains = grains.NewGrains()
+	flag.BoolVar(&DEBUG, "debug", false, "Enable debugging")
+	flag.StringVar(&utils.SearchString, "g", "", "Return grain")
+	flag.Parse()
+
+	Config = utils.NewConfigFile()
+	Config.ConfigInitialize()
+	MINION_BASE = fmt.Sprintf("%s/%s", MINION_BASE, Config.Minion.Name)
 }
 
-func getFlattenMap(s string) flatten.Map {
-	var jsonBlob map[string]interface{}
-	d := json.NewDecoder(bytes.NewReader([]byte(s)))
-	d.UseNumber()
-	if err := d.Decode(&jsonBlob); err != nil {
-		log.Fatal(err)
+var Config *utils.ConfigFile
+
+func debug(text ...string) {
+	if DEBUG {
+		fmt.Printf("DEBUG %s\n", strings.Join(text, " "))
 	}
-	// flattenedObject := flatten.Flatten(jsonBlob)
-	return flatten.Flatten(jsonBlob)
+}
+
+func getMasterHosts() []string {
+	var tmp []string
+	for x := range Config.Master.Host {
+		tmp = append(tmp, Config.Master.Host[x])
+	}
+	return tmp
 }
 
 func main() {
-
-	var searchString string
-	flag.StringVar(&searchString, "g", "", "Return grain")
-	flag.Parse()
-	var searchList []string
-	if strings.Contains(searchString, " or ") {
-		searchList = strings.Split(searchString, " or ")
-	}
 	// expect dial time-out on ipv4 blackhole
-	_, err := clientv3.New(clientv3.Config{
-		Endpoints:   []string{"http://254.0.0.1:12345"},
-		DialTimeout: 2 * time.Second,
-	})
+	// _, err := clientv3.New(clientv3.Config{
+	// 	Endpoints:   []string{"http://254.0.0.1:12345"},
+	// 	DialTimeout: 2 * time.Second,
+	// })
 
 	// etcd clientv3 >= v3.2.10, grpc/grpc-go >= v1.7.3
-	if err == context.DeadlineExceeded {
-		panic(err)
-	}
+	// if err == context.DeadlineExceeded {
+	// 	panic(err)
+	// }
 
 	cli, err := clientv3.New(clientv3.Config{
-		Endpoints:   []string{"localhost:2379", "localhost:2379", "localhost:2379"},
-		DialTimeout: 5 * time.Second,
+		// Endpoints:   []string{"localhost:2379", "localhost:2379", "localhost:2379"},
+		Endpoints:           getMasterHosts(),
+		DialTimeout:         5 * time.Second,
+		PermitWithoutStream: true,
+		DialKeepAliveTime:   time.Duration(time.Duration(Config.Master.KeeplivePing * 1000)),
 	})
-
 	if err != nil {
 		panic(err)
 	}
+
 	defer cli.Close()
+	fmt.Println("Connecting to server")
 
-	minionGrains.Update()
+	cluster, _ := cli.Cluster.MemberList(cli.Ctx())
+	fmt.Println("etcd: ", cluster)
+	utils.MinionGrains.Update()
+	fmt.Println(utils.MinionGrains.ToJSON())
 
-	// Test output to etcd
-	s := minionGrains.ToJSON()
-	fmt.Println(s)
+	APPLICATION := make(chan string)
+	go watchForCmdRun(APPLICATION, cli, MINION_BASE)
+	// presp, err := cli.KV.Delete(context.Background(), fmt.Sprintf("foo%d", x))
+	// testEtcKV(cli)
+	go keepalive(APPLICATION, cli, fmt.Sprintf("%s/connected", MINION_BASE))
+	time.Sleep(time.Second * 30)
+	APPLICATION <- "quit"
+}
 
-	// START SEARCH FOR GRAIN
-	// Using "github.com/cameronnewman/go-flatten"
-	fmt.Printf("search: %s\n", searchString)
-	if searchString != "" {
-		fmt.Println("- using \"g\" to find grain")
+func keepalive(APPLICATION chan string, cli *clientv3.Client, key string) {
+	for x := 0; x < 100; x += 0 {
+		select {
+		case applicationAction := <-APPLICATION:
+			if strings.Contains(applicationAction, "quit") {
+				fmt.Println("quitting go routine watchKey")
+				return
+			}
+		default:
+			presp, err := cli.KV.Put(context.Background(), key, "true")
 
-		flattenedObject := getFlattenMap(s)
-		for searchResult := range searchList {
-			search := searchList[searchResult]
-			if strings.Contains(search, "=") {
-				skeyval := strings.Split(search, "=")
-				sreg, _ := regexp.Compile(strings.ToLower(skeyval[1]))
-				for k, v := range flattenedObject {
-					// fmt.Printf(" (%s = %s)\n", k, v)
-					if strings.Contains(strings.ToLower(k), skeyval[0]) {
-						regsearch := sreg.FindString(strings.ToLower(v))
-						if regsearch != "" {
-							fmt.Println(k, v)
-						}
+			if err != nil {
+				panic(err)
+			}
+			_ = presp
+		}
+		time.Sleep(time.Second * 1)
+	}
+}
+func watchForCmdRun(APPLICATION chan string, cli *clientv3.Client, key string) {
+	fmt.Println("Watching for server requests on:", key)
+	sub := cli.Watch(context.Background(), fmt.Sprintf("%s/request", key), clientv3.WithProgressNotify())
+	// wresp := <-sub
+	for x := 0; x < 100; x += 0 {
+		select {
+		case wresp := <-sub:
+			for _, ev := range wresp.Events {
+				fmt.Printf("%s %q : %q\n", ev.Type, ev.Kv.Key, ev.Kv.Value)
+				if strings.Contains("cmd.run", string(ev.Kv.Value)) {
+					fmt.Printf("Reading the %s/request_content\n", fmt.Sprintf("%s/request_content", key))
+					resp, err := cli.KV.Get(context.Background(), fmt.Sprintf("%s/request_content", key), clientv3.WithPrefix())
+					if err != nil {
+						panic(err)
 					}
-				}
-			} else if strings.Contains(search, ">") || strings.Contains(search, "<") {
-				fmt.Println(" - numeric grain search not supported yet")
-			} else {
-				for k, v := range flattenedObject {
-					if strings.Contains(strings.ToLower(k), strings.ToLower(search)) {
-						fmt.Println(k, v)
+					requestContent := ""
+					for _, ev := range resp.Kvs {
+						fmt.Printf("%s : %s\n", ev.Key, ev.Value)
+						requestContent = string(ev.Value)
 					}
+					fmt.Printf("Got the following content to work with: %s\n", requestContent)
 				}
 			}
+		case applicationAction := <-APPLICATION:
+			if strings.Contains(applicationAction, "quit") {
+				fmt.Println("quitting go routine watchKey")
+				return
+			}
+		default:
+			time.Sleep(time.Second * 1)
 		}
-	} else {
-		fmt.Println("finding sysinfo.bios.vendor")
-		vs := gjson.Get(strings.ToLower(s), "sysinfo.bios.vendor")
-
-		fmt.Println(vs.String())
 	}
-	// END SEARCH FOR GRAIN
-	os.Exit(0)
+
+	fmt.Println("- end watching key:", key)
+}
+
+func testEtcKV(cli *clientv3.Client) {
 	fmt.Println("Adding 1 kv's")
 	for x := 0; x < 1000; x++ {
 		presp, err := cli.KV.Put(context.Background(), fmt.Sprintf("/foo_%d", x), fmt.Sprintf("value_%d", x))
-		// presp, err := cli.KV.Delete(context.Background(), fmt.Sprintf("foo%d", x))
+
 		if err != nil {
 			panic(err)
 		}
